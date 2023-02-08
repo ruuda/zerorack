@@ -2,7 +2,7 @@
 
 module Main where
 
-import Control.Monad (forM_)
+import Control.Monad (forM, forM_)
 import Data.Foldable (for_)
 
 -- Variables are numbered.
@@ -10,6 +10,9 @@ newtype VarNum = VarNum Int deriving (Eq, Ord)
 
 instance Show VarNum where
   show (VarNum i) = "x" <> (show i)
+
+inc :: VarNum -> VarNum
+inc (VarNum i) = VarNum (i + 1)
 
 -- A simple expression, one that we can express as an arithmetic circuit.
 data Expr
@@ -43,70 +46,55 @@ data Output
   | Define VarNum ExprExt
   deriving (Eq, Ord, Show)
 
-data Circuit a = Circuit a [Output] deriving (Eq, Ord, Show)
-
-nextFreeVariable :: [Output] -> VarNum
-nextFreeVariable [] = VarNum 0
-nextFreeVariable xs = VarNum $ maximum $ fmap getNum xs
-  where
-    getNum :: Output -> Int
-    getNum (ConstrainEq _ _) = 0
-    getNum (Define (VarNum i) _) = i + 1
-
-bump :: VarNum -> VarNum -> VarNum
-bump (VarNum x) (VarNum y) = VarNum (x + y)
-
-refresh :: VarNum -> Expr -> Expr
-refresh n expr = case expr of
-  Const k -> Const k
-  Add x y -> Add (refresh n x) (refresh n y)
-  Sub x y -> Sub (refresh n x) (refresh n y)
-  Mul x y -> Mul (refresh n x) (refresh n y)
-  Var i -> Var $ bump n i
-
-refreshExt :: VarNum -> ExprExt -> ExprExt
-refreshExt n expr = case expr of
-  Simple ex -> Simple (refresh n ex)
-  Div x y   -> Div (refresh n x) (refresh n y)
-  Inv x     -> Inv (refresh n x)
-  And x y   -> And (refresh n x) (refresh n y)
-
-refreshOutput :: VarNum -> Output -> Output
-refreshOutput n out = case out of
-  ConstrainEq x y -> ConstrainEq (refresh n x) (refresh n y)
-  Define i expr   -> Define (bump n i) (refreshExt n expr)
+data Circuit a = Circuit (VarNum -> (a, VarNum, [Output]))
 
 instance Functor Circuit where
   fmap :: (a -> b) -> Circuit a -> Circuit b
-  fmap f (Circuit x cs) = Circuit (f x) cs
+  fmap f (Circuit g) = Circuit $ \n ->
+    let
+      (x, n', cs) = g n
+    in
+      (f x, n', cs)
 
 instance Applicative Circuit where
   pure :: a -> Circuit a
-  pure x = Circuit x []
+  pure x = Circuit $ \n -> (x, n, [])
 
-  -- We concatenate the outputs of each of the sides, but we also have to
-  -- renumber all variables that occur on the right-hand side to not clash with
-  -- the ones defined on the left-hand side
   (<*>) :: Circuit (a -> b) -> Circuit a -> Circuit b
-  (Circuit f csa) <*> (Circuit x csb) =
-    Circuit (f x) (csa <> (fmap (refreshOutput $ nextFreeVariable csa) csb))
+  (Circuit f) <*> (Circuit g) = Circuit $ \n ->
+    let
+      (vf, n',  csf) = f n
+      (vx, n'', csx) = g n'
+    in
+      (vf vx, n'', csx <> csf)
 
--- TODO: Monad instance considered harmful, can we avoid it?
 instance Monad Circuit where
   (>>=) :: Circuit a -> (a -> Circuit b) -> Circuit b
-  -- TODO: Renumber, don't lose the csa
-  (Circuit x csa) >>= f =
+  (Circuit f) >>= g = Circuit $ \n ->
     let
-      Circuit y csb = f x
+      (x, n',  csx) = f n
+      Circuit g' = g x
+      (y, n'', csy) = g' n'
     in
-      Circuit y (csa <> (fmap (refreshOutput $ nextFreeVariable csa) csb))
+      (y, n'', csy <> csx)
+
+-- Define a new input variable.
+newInput :: Circuit Expr
+newInput = Circuit $ \n -> (Var n, inc n, [])
+
+buildCircuit :: Circuit a -> (a, [Output])
+buildCircuit (Circuit f) =
+  let
+    (x, _, cs) = f $ VarNum 0
+  in
+    (x, cs)
 
 assertEq :: Expr -> Expr -> Circuit ()
-assertEq x y = Circuit () [ConstrainEq x y]
+assertEq x y = Circuit $ \n -> ((), n, [ConstrainEq x y])
 
 -- Record the definition for a new variable as an extended expression.
 define :: ExprExt -> Circuit Expr
-define expr = Circuit (Var (VarNum 0)) [Define (VarNum 0) expr]
+define expr = Circuit $ \n -> (Var n, inc n, [Define n expr])
 
 idiv :: Expr -> Expr -> Circuit Expr
 idiv x y = define $ Div x y
@@ -162,9 +150,9 @@ assertRowGood xs = do
 main :: IO ()
 main =
   let
-    -- Hack: number our own inputs negatively, because right now I don't scan in
-    -- expressions to find the next free variable.
-    inputs = fmap (Var . VarNum . negate) [1..9]
-    Circuit _ outputs = assertRowGood inputs
+    circuit = do
+      inputs <- forM [1..9] $ \_ -> newInput
+      assertRowGood inputs
+    (_, outputs) = buildCircuit circuit
   in
     forM_ outputs (putStrLn . show)
