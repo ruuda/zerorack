@@ -1,18 +1,34 @@
 {-# LANGUAGE ApplicativeDo #-}
+{-# LANGUAGE LambdaCase #-}
 
 module Main where
 
 import Control.Monad (forM, forM_)
 import Data.Foldable (for_)
+import Data.IntMap (IntMap)
+import Data.List (intercalate)
+
+import qualified Data.IntMap as IntMap
 
 -- Variables are numbered.
 newtype VarNum = VarNum Int deriving (Eq, Ord)
+newtype RegNum = RegNum Int deriving (Eq, Ord)
 
 instance Show VarNum where
   show (VarNum i) = "x" <> (show i)
 
-inc :: VarNum -> VarNum
-inc (VarNum i) = VarNum (i + 1)
+instance Show RegNum where
+  show (RegNum 0) = "1" -- Register 0 is always implicitly 1.
+  show (RegNum i) = "r" <> (show i)
+
+class Increment a where
+  inc :: a -> a
+
+instance Increment VarNum where
+  inc (VarNum i) = VarNum (i + 1)
+
+instance Increment RegNum where
+  inc (RegNum i) = RegNum (i + 1)
 
 -- A simple expression, one that we can express as an arithmetic circuit.
 data Expr
@@ -108,6 +124,130 @@ fieldInv x = define $ Inv x
 bitAnd :: Expr -> Expr -> Circuit Expr
 bitAnd x y = define $ And x y
 
+-- A vector of field elements, represented sparsely
+-- as a map of index to value.
+type Vector = IntMap Integer
+
+-- A constraint of the form <w, a> * <w, b> = <w, c>
+-- where <x, y> is the inner product between two vectors,
+-- and * is the regular product in the field.
+data Rank1Constraint = Rank1Constraint Vector Vector Vector deriving (Eq, Ord)
+
+instance Show Rank1Constraint where
+  show (Rank1Constraint a b c) =
+    let
+      -- Register 0 contains value 1, so we omit it. Similarly, if the
+      -- coefficient is 1, we can omit it.
+      showProduct (0, v) = show v
+      showProduct (k, 1) = "r" <> (show k)
+      showProduct (k, v) = (show v) <> " r" <> (show k)
+
+      showInnerProduct = id
+        . intercalate " + "
+        . fmap showProduct
+        . filter (\(k, v) -> v /= 0)
+        . IntMap.toList
+
+      showParens xs =
+        if IntMap.size xs > 1
+        then "(" <> (showInnerProduct xs) <> ")"
+        else showInnerProduct xs
+    in
+      (showParens a) <> " * " <> (showParens b) <> " = " <> (showInnerProduct c)
+
+data Compile a = Compile (RegNum -> (a, RegNum, [Rank1Constraint]))
+
+instance Functor Compile where
+  fmap :: (a -> b) -> Compile a -> Compile b
+  fmap f (Compile g) = Compile $ \n ->
+    let
+      (x, n', cs) = g n
+    in
+      (f x, n', cs)
+
+instance Applicative Compile where
+  pure :: a -> Compile a
+  pure x = Compile $ \n -> (x, n, [])
+
+  (<*>) :: Compile (a -> b) -> Compile a -> Compile b
+  (Compile f) <*> (Compile g) = Compile $ \n ->
+    let
+      (vf, n',  csf) = f n
+      (vx, n'', csg) = g n'
+    in
+      (vf vx, n'', csg <> csf)
+
+instance Monad Compile where
+  (>>=) :: Compile a -> (a -> Compile b) -> Compile b
+  (Compile f) >>= g = Compile $ \n ->
+    let
+      (x, n',  csf) = f n
+      Compile g' = g x
+      (y, n'', csg) = g' n'
+    in
+      (y, n'', csg <> csf)
+
+-- Emit a constraint of the form <w,a> * <w,b> = <w,c>
+emitConstraint :: Vector -> Vector -> Vector -> Compile ()
+emitConstraint a b c = Compile $ \n -> ((), n, [Rank1Constraint a b c])
+
+newRegister :: Compile RegNum
+newRegister = Compile $ \n -> (n, inc n, [])
+
+runCompile :: Compile a -> (a, [Rank1Constraint])
+runCompile (Compile f) =
+  let
+    -- Register 0 is always implicitly 1,
+    -- the next free register is number 1.
+    (x, _, cs) = f (RegNum 1)
+  in
+    (x, cs)
+
+compileExpr :: Expr -> Compile Vector
+compileExpr = \case
+  Const x ->
+    -- A constant x we can represent as the inner product x * r0,
+    -- where r0 holds the constant 1.
+    pure $ IntMap.singleton 0 x
+
+  Add x y -> do
+    -- If we add two expressions, and we have both of them as a list of
+    -- coefficients, then we can just add those coefficients elementwise.
+    xv <- compileExpr x
+    yv <- compileExpr y
+    pure $ IntMap.unionWith (+) xv yv
+
+  Sub x y -> do
+    -- Same for subtraction.
+    xv <- compileExpr x
+    yv <- compileExpr y
+    pure $ IntMap.unionWith (-) xv yv
+
+  Mul x y -> do
+    -- To multiply two expressions, we introduce a new R1CS constraint with a
+    -- fresh register. The register holds the result of the multiplication, and
+    -- then we constrain it to be equal to the product of the inputs.
+    xv <- compileExpr x
+    yv <- compileExpr y
+    RegNum r <- newRegister
+    emitConstraint xv yv (IntMap.singleton r 1)
+    pure $ IntMap.singleton r 1
+
+  Var v -> do
+    -- TODO: Record somewhere that register r should be filled with variable v.
+    RegNum r <- newRegister
+    pure $ IntMap.singleton r 1
+
+compileConstraint :: Constraint -> Compile ()
+compileConstraint (ConstrainEq x y) = do
+  rx <- compileExpr x
+  ry <- compileExpr y
+  -- TODO: If it's a multiplication, we can use it directly.
+  -- Or maybe we should just run an optimizer afterwards to pack everything
+  -- tightly again. I have to think about this ...
+  -- Emit a constraint of the form 1 * x = y.
+  emitConstraint rx (IntMap.singleton 0 1) ry
+
 -- Return the k-th bit of the input expression.
 selectBit :: Int -> Expr -> Circuit Expr
 selectBit k x = do
@@ -158,6 +298,11 @@ main =
       assertRowGood inputs
 
     (_, ds, cs) = buildCircuit circuit
+    (_, r1cs) = runCompile $ forM cs compileConstraint
   in do
+    putStrLn "Definitions:"
     forM_ ds (putStrLn . show)
+    putStrLn "\nConstraints:"
     forM_ cs (putStrLn . show)
+    putStrLn "\nCompiled Rank-1 Constraints:"
+    forM_ r1cs (putStrLn . show)
