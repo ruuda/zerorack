@@ -241,25 +241,51 @@ compileExpr = \case
     RegNum r <- newRegister
     pure $ IntMap.singleton r 1
 
+-- Put the expression in a canonical form. This helps to simplify the pattern
+-- matching later; we don't have to consider all the symmetries of a particular
+-- situation.
+canonicalizeExpr :: Expr -> Expr
+canonicalizeExpr = \case
+  -- Float constants to the left in commutative operators.
+  Add x (Const z) -> Add (Const z) (canonicalizeExpr x)
+  Mul x (Const z) -> Mul (Const z) (canonicalizeExpr x)
+  -- Float Variables to the right
+  Add (Var i) x -> Add (canonicalizeExpr x) (Var i)
+  Mul (Var i) x -> Mul (canonicalizeExpr x) (Var i)
+
+  -- Otherwise, canonicalize internally.
+  Add x y -> Add (canonicalizeExpr x) (canonicalizeExpr y)
+  Sub x y -> Sub (canonicalizeExpr x) (canonicalizeExpr y)
+  Mul x y -> Mul (canonicalizeExpr x) (canonicalizeExpr y)
+  Const z -> Const z
+  Var i -> Var i
+
+canonicalizeConstraint :: Constraint -> Constraint
+canonicalizeConstraint (ConstrainEq x y) = case (canonicalizeExpr x, canonicalizeExpr y) of
+  -- Float multiplications to the left, and additions to the right.
+  (x, Mul y z) -> ConstrainEq (Mul y z) x
+  (Add x y, z) -> ConstrainEq z (Add x y)
+  (Sub x y, z) -> ConstrainEq z (Sub x y)
+  -- Float variables to the left, and constants to the right.
+  (x, Var i)   -> ConstrainEq (Var i) x
+  (Const z, x) -> ConstrainEq x (Const z)
+  -- Otherwise leave the constraints untouched.
+  (x, y)       -> ConstrainEq x y
+
+
 compileConstraint :: Constraint -> Compile ()
-compileConstraint (ConstrainEq x y) = case (x, y) of
+compileConstraint constr = case canonicalizeConstraint constr of
   -- The final general case can deal with any kind of expression, but we
   -- special-case constraints of the form "product = constant", because that
   -- form matches the R1CS form, so we can compile it to that with fewer
   -- intermediate registers.
-  (Mul xa xb, _y) -> do
+  ConstrainEq (Mul xa xb) y -> do
     ra <- compileExpr xa
     rb <- compileExpr xb
     ry <- compileExpr y
     emitConstraint ra rb ry
 
-  (_x, Mul ya yb) -> do
-    rx <- compileExpr x
-    ra <- compileExpr ya
-    rb <- compileExpr yb
-    emitConstraint ra rb rx
-
-  _ -> do
+  ConstrainEq x y -> do
     rx <- compileExpr x
     ry <- compileExpr y
     -- TODO: If it's a multiplication, we can use it directly.
