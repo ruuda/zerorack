@@ -145,13 +145,12 @@ instance Show Rank1Constraint where
       showInnerProduct = id
         . intercalate " + "
         . fmap showProduct
-        . filter (\(k, v) -> v /= 0)
         . IntMap.toList
 
-      showParens xs =
-        if IntMap.size xs > 1
-        then "(" <> (showInnerProduct xs) <> ")"
-        else showInnerProduct xs
+      showParens xs = case IntMap.size xs of
+        0 -> "0"
+        1 -> showInnerProduct xs
+        _ -> "(" <> (showInnerProduct xs) <> ")"
     in
       (showParens a) <> " * " <> (showParens b) <> " = " <> (showInnerProduct c)
 
@@ -215,13 +214,17 @@ compileExpr = \case
     -- coefficients, then we can just add those coefficients elementwise.
     xv <- compileExpr x
     yv <- compileExpr y
-    pure $ IntMap.unionWith (+) xv yv
+    pure
+      $ IntMap.filter (/= 0)
+      $ IntMap.unionWith (+) xv yv
 
   Sub x y -> do
     -- Same for subtraction.
     xv <- compileExpr x
     yv <- compileExpr y
-    pure $ IntMap.unionWith (-) xv yv
+    pure
+      $ IntMap.filter (/= 0)
+      $ IntMap.unionWith (-) xv yv
 
   Mul x y -> do
     -- To multiply two expressions, we introduce a new R1CS constraint with a
@@ -239,14 +242,31 @@ compileExpr = \case
     pure $ IntMap.singleton r 1
 
 compileConstraint :: Constraint -> Compile ()
-compileConstraint (ConstrainEq x y) = do
-  rx <- compileExpr x
-  ry <- compileExpr y
-  -- TODO: If it's a multiplication, we can use it directly.
-  -- Or maybe we should just run an optimizer afterwards to pack everything
-  -- tightly again. I have to think about this ...
-  -- Emit a constraint of the form 1 * x = y.
-  emitConstraint rx (IntMap.singleton 0 1) ry
+compileConstraint (ConstrainEq x y) = case (x, y) of
+  -- The final general case can deal with any kind of expression, but we
+  -- special-case constraints of the form "product = constant", because that
+  -- form matches the R1CS form, so we can compile it to that with fewer
+  -- intermediate registers.
+  (Mul xa xb, _y) -> do
+    ra <- compileExpr xa
+    rb <- compileExpr xb
+    ry <- compileExpr y
+    emitConstraint ra rb ry
+
+  (_x, Mul ya yb) -> do
+    rx <- compileExpr x
+    ra <- compileExpr ya
+    rb <- compileExpr yb
+    emitConstraint ra rb rx
+
+  _ -> do
+    rx <- compileExpr x
+    ry <- compileExpr y
+    -- TODO: If it's a multiplication, we can use it directly.
+    -- Or maybe we should just run an optimizer afterwards to pack everything
+    -- tightly again. I have to think about this ...
+    -- Emit a constraint of the form 1 * x = y.
+    emitConstraint rx (IntMap.singleton 0 1) ry
 
 -- Return the k-th bit of the input expression.
 selectBit :: Int -> Expr -> Circuit Expr
