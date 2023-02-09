@@ -1,14 +1,15 @@
 {-# LANGUAGE ApplicativeDo #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE ViewPatterns #-}
 
 module Main where
 
 import Control.Monad (forM, forM_)
-import Data.Foldable (for_)
-import Data.IntMap (IntMap)
+import Data.Foldable (foldr', for_)
+import Data.IntMap.Strict (IntMap)
 import Data.List (intercalate)
 
-import qualified Data.IntMap as IntMap
+import qualified Data.IntMap.Strict as IntMap
 
 -- Variables are numbered.
 newtype VarNum = VarNum Int deriving (Eq, Ord)
@@ -272,7 +273,6 @@ canonicalizeConstraint (ConstrainEq x y) = case (canonicalizeExpr x, canonicaliz
   -- Otherwise leave the constraints untouched.
   (x, y)       -> ConstrainEq x y
 
-
 compileConstraint :: Constraint -> Compile ()
 compileConstraint constr = case canonicalizeConstraint constr of
   -- The final general case can deal with any kind of expression, but we
@@ -293,6 +293,51 @@ compileConstraint constr = case canonicalizeConstraint constr of
     -- tightly again. I have to think about this ...
     -- Emit a constraint of the form 1 * x = y.
     emitConstraint rx (IntMap.singleton 0 1) ry
+
+-- Collect all contraints that are of the form "const * (linear combination) =
+-- reg". These are "definitions", in the sense that we can replace all
+-- references to register `reg` in other constraints by the left hand side of
+-- the equality. Returns a map with every register of this form, and as value
+-- the linear combination of other registers that it is equal to.
+extractDefinitions :: [Rank1Constraint] -> IntMap Vector
+extractDefinitions constraints =
+  let
+    -- If a vector only has a single nonzero coefficient, return the register
+    -- number and its coefficient.
+    isSingleton :: Vector -> Maybe (RegNum, Integer)
+    isSingleton x = case IntMap.toList x of
+      [(k, z)] -> Just (RegNum k, z)
+      _ -> Nothing
+    --
+    -- If a vector has only a coefficient for register 0 (the constant 1),
+    -- return the coefficient.
+    isConstant :: Vector -> Maybe Integer
+    isConstant x = case isSingleton x of
+      Just (RegNum 0, z) -> Just z
+      Nothing -> Nothing
+
+    -- If a constraint is a pure definition, add it to the map. A pure
+    -- definition is one of the form "const * (linear combination) = reg".
+    -- In this case we can replace all references to register `reg` in other
+    -- constraints, with the left-hand side.
+    addDefinition :: Rank1Constraint -> IntMap Vector -> IntMap Vector
+    addDefinition constr defs = case constr of
+      Rank1Constraint
+        (isConstant -> Just a)
+        b
+        (isSingleton -> Just (RegNum r, 1))
+        ->
+          -- Fold the constant a into the coefficients of the vector b, then
+          -- insert this as the definition of register r.
+          IntMap.insert r (fmap (* a) b) defs
+      _ ->
+        defs
+  in
+    foldr' addDefinition IntMap.empty constraints
+
+-- Try to express the same relations in fewer constraints.
+optimizeConstraints :: [Rank1Constraint] -> [Rank1Constraint]
+optimizeConstraints = id
 
 -- Return the k-th bit of the input expression.
 selectBit :: Int -> Expr -> Circuit Expr
@@ -345,6 +390,7 @@ main =
 
     (_, ds, cs) = buildCircuit circuit
     (_, r1cs) = runCompile $ forM cs compileConstraint
+    defs = extractDefinitions r1cs
   in do
     putStrLn "Definitions:"
     forM_ ds (putStrLn . show)
@@ -352,3 +398,5 @@ main =
     forM_ cs (putStrLn . show)
     putStrLn "\nCompiled Rank-1 Constraints:"
     forM_ r1cs (putStrLn . show)
+    putStrLn "\nPure definitions:"
+    forM_ (IntMap.toList defs) (putStrLn . show)
