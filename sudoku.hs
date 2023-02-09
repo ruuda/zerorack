@@ -11,7 +11,9 @@ import Data.List (intercalate)
 
 import qualified Data.IntMap.Strict as IntMap
 
--- Variables are numbered.
+-- Variables are numbered. To have some distinction between variables in the
+-- input expressions and in the output constraints, in the compilation phase,
+-- we call the variables in the constraints "registers" instead of "variables".
 newtype VarNum = VarNum Int deriving (Eq, Ord)
 newtype RegNum = RegNum Int deriving (Eq, Ord)
 
@@ -155,7 +157,16 @@ instance Show Rank1Constraint where
     in
       (showParens a) <> " * " <> (showParens b) <> " = " <> (showInnerProduct c)
 
-data Compile a = Compile (RegNum -> (a, RegNum, [Rank1Constraint]))
+-- The compiler state tracks the next free register, as well as which registers
+-- should be filled by which variables. (Registers that don't occur in the
+-- variable mapping are intermediate registers that were introduced to make
+-- constraints rank 1.)
+data CompileState = CompileState
+  { csNextFree :: RegNum
+  , csVariableMapping :: IntMap RegNum
+  }
+
+data Compile a = Compile (CompileState -> (a, CompileState, [Rank1Constraint]))
 
 instance Functor Compile where
   fmap :: (a -> b) -> Compile a -> Compile b
@@ -192,14 +203,23 @@ emitConstraint :: Vector -> Vector -> Vector -> Compile ()
 emitConstraint a b c = Compile $ \n -> ((), n, [Rank1Constraint a b c])
 
 newRegister :: Compile RegNum
-newRegister = Compile $ \n -> (n, inc n, [])
+newRegister = Compile $
+  \(CompileState n regs) -> (n, CompileState (inc n) regs, [])
+
+-- Return the register that is mapped to the given variable, or insert this
+-- mapping if one does not yet exist.
+mapVariable :: VarNum -> Compile RegNum
+mapVariable (VarNum i) = Compile $
+  \(CompileState n regs) -> case IntMap.lookup i regs of
+    Just r  -> (r, CompileState n regs, [])
+    Nothing -> (n, CompileState (inc n) (IntMap.insert i n regs), [])
 
 runCompile :: Compile a -> (a, [Rank1Constraint])
 runCompile (Compile f) =
   let
     -- Register 0 is always implicitly 1,
     -- the next free register is number 1.
-    (x, _, cs) = f (RegNum 1)
+    (x, _, cs) = f $ CompileState (RegNum 1) IntMap.empty
   in
     (x, cs)
 
@@ -238,8 +258,7 @@ compileExpr = \case
     pure $ IntMap.singleton r 1
 
   Var v -> do
-    -- TODO: Record somewhere that register r should be filled with variable v.
-    RegNum r <- newRegister
+    RegNum r <- mapVariable v
     pure $ IntMap.singleton r 1
 
 -- Put the expression in a canonical form. This helps to simplify the pattern
