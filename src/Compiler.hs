@@ -64,6 +64,10 @@ data CompileState = CompileState
   , csVariableMapping :: IntMap RegNum
   }
 
+-- A monad for compiling expressions to rank-1 constraints (R1CS). This is a
+-- hybrid writer monad and state monad, where the state is `CompileState` (which
+-- tracks the next fresh variable, etc.) and writer output are the rank-1
+-- constraints.
 data Compile a = Compile (CompileState -> (a, CompileState, [Rank1Constraint]))
 
 instance Functor Compile where

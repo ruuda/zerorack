@@ -18,7 +18,7 @@ module Circuit
   )
 where
 
-import Expr (Expr (..), ExprExt (..), VarNum (..), Increment (inc))
+import Expr (Expr (Var), ExprExt (And, Div, Inv), VarNum (VarNum), Increment (inc))
 
 data Constraint
   = ConstrainEq Expr Expr
@@ -28,6 +28,12 @@ data Definition
   = Define VarNum ExprExt
   deriving (Eq, Ord, Show)
 
+-- A monad for building circuits and constraints.
+--
+-- This is a hybrid between a state monad and a writer monad: the state is the
+-- fresh variable counter, and the outputs to write are definitions (when we
+-- need to define how to compute some intermediate variable, because it can't be
+-- expressed in the circuit itself), and constraints.
 data Circuit a = Circuit (VarNum -> (a, VarNum, [Definition], [Constraint]))
 
 instance Functor Circuit where
