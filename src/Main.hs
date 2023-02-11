@@ -11,15 +11,12 @@
 module Main where
 
 import Control.Monad (forM, forM_, when)
-import Data.Foldable (foldr', for_)
-import Data.IntMap.Strict (IntMap)
-import Data.List (intercalate)
+import Data.Foldable (for_)
 
 import qualified Data.IntMap.Strict as IntMap
 
-import Expr (Expr (..), ExprExt (..), VarNum (..), RegNum (..), Increment (inc))
-import Circuit (Constraint (..), Circuit, assertEq, bitAnd, buildCircuit, fieldInv, idiv, newInput)
-import Compiler (Compile (..), Rank1Constraint (Rank1Constraint), Vector)
+import Expr (Expr)
+import Circuit (Circuit, assertEq, bitAnd, buildCircuit, fieldInv, idiv, newInput)
 
 import qualified Compiler
 import qualified Optimizer
@@ -52,7 +49,7 @@ assertNonZero x = do
   assertEq (fromInteger 1) (x * xInv)
 
 assertAllDistinct :: [Expr] -> Circuit ()
-assertAllDistinct xs = case xs of
+assertAllDistinct = \case
   []  -> pure ()
   [_] -> pure ()
   x : xs -> do
@@ -70,7 +67,7 @@ main :: IO ()
 main =
   let
     circuit = do
-      inputs <- forM [1..9] $ \_ -> newInput
+      inputs <- forM [1..9 :: Int] $ \_ -> newInput
       assertRowGood inputs
 
     (_, ds, cs) = buildCircuit circuit
