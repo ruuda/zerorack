@@ -13,6 +13,7 @@
     in
       {
         devShells.x86_64-linux.default = pkgs.mkShell {
+          name = "zerorack";
           nativeBuildInputs = [
             ghc
             pkgs.gnumake
