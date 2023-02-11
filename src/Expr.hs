@@ -50,8 +50,8 @@ instance Num Expr where
   x - y = Sub x y
   x * y = Mul x y
   negate x = Sub (Const 0) x
-  abs x = error "Not supported: abs"
-  signum x = error "Not supported: signum"
+  abs _ = error "Not supported: abs"
+  signum _ = error "Not supported: signum"
   fromInteger x = Const x
 
 -- An extended expression, one that we can use for computing the witness, but

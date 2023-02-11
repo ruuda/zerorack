@@ -35,7 +35,7 @@ isVecSingleton x = case IntMap.toList x of
 isVecConstant :: Vector -> Maybe Integer
 isVecConstant x = case isVecSingleton x of
   Just (RegNum 0, z) -> Just z
-  Nothing -> Nothing
+  _ -> Nothing
 
 -- Collect all contraints that are of the form "const * (linear combination) =
 -- reg". These are "definitions", in the sense that we can replace all

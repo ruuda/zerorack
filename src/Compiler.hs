@@ -60,8 +60,8 @@ instance Show Rank1Constraint where
 -- variable mapping are intermediate registers that were introduced to make
 -- constraints rank 1.)
 data CompileState = CompileState
-  { csNextFree :: RegNum
-  , csVariableMapping :: IntMap RegNum
+  { _csNextFree :: RegNum
+  , _csVariableMapping :: IntMap RegNum
   }
 
 -- A monad for compiling expressions to rank-1 constraints (R1CS). This is a
@@ -183,16 +183,17 @@ canonicalizeExpr = \case
   Var i -> Var i
 
 canonicalizeConstraint :: Constraint -> Constraint
-canonicalizeConstraint (ConstrainEq x y) = case (canonicalizeExpr x, canonicalizeExpr y) of
-  -- Float multiplications to the left, and additions to the right.
-  (x, Mul y z) -> ConstrainEq (Mul y z) x
-  (Add x y, z) -> ConstrainEq z (Add x y)
-  (Sub x y, z) -> ConstrainEq z (Sub x y)
-  -- Float variables to the left, and constants to the right.
-  (x, Var i)   -> ConstrainEq (Var i) x
-  (Const z, x) -> ConstrainEq x (Const z)
-  -- Otherwise leave the constraints untouched.
-  (x, y)       -> ConstrainEq x y
+canonicalizeConstraint (ConstrainEq lhs rhs) =
+  case (canonicalizeExpr lhs, canonicalizeExpr rhs) of
+    -- Float multiplications to the left, and additions to the right.
+    (x, Mul y z) -> ConstrainEq (Mul y z) x
+    (Add x y, z) -> ConstrainEq z (Add x y)
+    (Sub x y, z) -> ConstrainEq z (Sub x y)
+    -- Float variables to the left, and constants to the right.
+    (x, Var i)   -> ConstrainEq (Var i) x
+    (Const z, x) -> ConstrainEq x (Const z)
+    -- Otherwise leave the constraints untouched.
+    (x, y)       -> ConstrainEq x y
 
 compileConstraint :: Constraint -> Compile ()
 compileConstraint constr = case canonicalizeConstraint constr of
