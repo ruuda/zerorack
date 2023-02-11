@@ -1,3 +1,4 @@
-/sudoku
+/build
+/zerorack
 *.hi
 *.o
