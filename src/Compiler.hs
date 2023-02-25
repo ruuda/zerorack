@@ -6,6 +6,7 @@
 -- A copy of the License has been included in the root of the repository.
 
 {-# LANGUAGE ApplicativeDo #-}
+{-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE LambdaCase #-}
 
 module Compiler
