@@ -1,7 +1,7 @@
 {
   description = "A DSL for constructing zero-knowledge proofs.";
 
-  inputs.nixpkgs.url = "nixpkgs/nixos-unstable";
+  inputs.nixpkgs.url = "nixpkgs/nixos-23.05";
 
   outputs = { self, nixpkgs }:
     let
